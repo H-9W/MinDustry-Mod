@@ -35,10 +35,10 @@ A pure client-side UI tool — it adds no game content and causes no multiplayer
 ### Draggable panel
 - Grab the panel **title bar** to move the whole window; its position is remembered when you close it.
 
-### Remote request blocking (removes "Connection reset" popups)
-- The mod blocks two remote requests made by the game itself (community server list + mod browser remote list), eliminating the repeated "Error (Connection reset)" popups when GitHub is unreachable.
-- **Trade-off**: the mod browser then only shows locally installed mods, not the remote list.
-- **Toggle**: set `BLOCK_REMOTE_FETCH` to `false` at the top of `scripts/main.js` and repackage if you don't want this behavior.
+### Connection reset popup fix (remote requests)
+- The game itself makes two kinds of remote requests (community server list + mod browser remote list); when GitHub is unreachable from China this causes repeated "Error (Connection reset)" popups.
+- The mod blocks those original requests and instead loads the official mod registry through the **ghproxy.net mirror**, so the **remote mod list still works** and the popups are gone.
+- **Toggle**: to skip the mirror (browser then shows only locally installed mods), set `USE_MODLIST_MIRROR` to `false` at the top of `scripts/main.js` and repackage; the popup-blocking itself is unaffected by this switch.
 
 ---
 
@@ -96,7 +96,8 @@ A pure client-side UI tool — it adds no game content and causes no multiplayer
 - Mindustry auto-disables a mod whose script throws an exception. Fix: Settings → Mods → re-enable the switch → restart.
 
 **Still getting "Error (Connection reset)" popups?**
-- Make sure the mod is enabled (the blocking logic lives in the mod). If you set `BLOCK_REMOTE_FETCH` to `false`, remote requests — and the popups — return.
+- Make sure the mod is enabled (the blocking logic lives in the mod); once enabled the popups stop.
+- An empty mod-browser list is not a fault: the mirror may be temporarily unreachable, or you set `USE_MODLIST_MIRROR` to `false`. Either way only the remote list display is affected — item giving and speed-up keep working.
 
 **"Items are managed by the server" when tapping Give?**
 - You are a client in a multiplayer game. Only singleplayer or hosting yourself allows giving and boosting; see Behavior details.
@@ -115,7 +116,7 @@ What each file in this directory is (players only need the Releases packages —
 | File | What it is |
 |---|---|
 | `mod.hjson` | The mod's "ID card": display name, version, author and other metadata the game uses to recognize and load the mod (field names must be English) |
-| `scripts/main.js` | All mod logic in JavaScript source; the only setting you may ever edit is the `BLOCK_REMOTE_FETCH` switch at the top |
+| `scripts/main.js` | All mod logic in JavaScript source; the only setting you may ever edit is the `USE_MODLIST_MIRROR` switch at the top |
 | `README.md` | This manual (Chinese) |
 | `README.en.md` | This manual (English) |
 
@@ -132,4 +133,4 @@ What each file in this directory is (players only need the Releases packages —
 | Author | H |
 | Type | Pure client-side UI tool (`hidden: true`, registers no content, no multiplayer version-hash conflict) |
 
-**v1.0 highlights**: rewritten draggable button (long-press follow, position memory); single-column item cards with live "have" counts; nine independent 0–20× speed sliders; draggable panel title bar; text layout tuned to measured glyph widths with ellipsis and mobile narrow-screen support; remote-request blocking to kill the Connection reset popups (toggleable via `BLOCK_REMOTE_FETCH`).
+**v1.0 highlights**: rewritten draggable button (long-press follow, position memory); single-column item cards with live "have" counts; nine independent 0–20× speed sliders; draggable panel title bar; text layout tuned to measured glyph widths with ellipsis and mobile narrow-screen support; Connection reset popups eliminated while the remote mod list is loaded through a domestic mirror, ghproxy.net (toggleable via `USE_MODLIST_MIRROR`).
