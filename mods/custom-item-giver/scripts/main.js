@@ -36,18 +36,22 @@ var MOD_NAME = "自定义面板";
 var MOD_VERSION = "1.0";
 
 /**
- * true = 挡掉游戏自己发起的两类远程请求，它们在本机必然失败并弹出
- * 「发生错误 (Connection reset)」：
- *   1) 社区服务器列表：mindustry.ui.dialogs.JoinDialog.fetchServers()，
- *      它第一步读 communityservers 开关，关掉即可；
- *   2) 模组浏览器的远程模组列表：ModBrowserDialog.getModListInternal() 拉
- *      Vars.modJsonURLs（GitHub raw + jsDelivr 两个地址都被本机网络重置），
- *      全部失败后走 ModsDialog.showModError() —— 这一条没有任何设置能关，
- *      只能让它在发请求之前返回（见 blockRemoteFetch() 的注释）。
- * 代价：模组浏览器里不再显示远程模组列表，只显示本地已装的模组。
- * 想恢复远程列表就把这行改成 false 重新打包。
+ * 游戏自己发起的两类远程请求，其中两类地址（GitHub raw + jsDelivr）在国内
+ * 网络被 Connection reset，必然弹「发生错误」：
+ *   1) 社区服务器列表：JoinDialog.fetchServers() 读 communityservers 开关，关掉即可；
+ *   2) 模组浏览器的远程模组列表：ModBrowserDialog 拉 Vars.modJsonURLs。
+ *      本版不再「堵死」它，而是「改道」：先塞一个空列表挡住必然失败的原始请求，
+ *      再由 fetchModListMirror() 从 ghproxy.net 镜像拉 mods.json 填进同一个列表，
+ *      模组浏览器因此能正常显示远程模组（重开一次浏览器即可看到新数据）。
+ * USE_MODLIST_MIRROR = false 时退回旧行为：只挡请求、不拉镜像（列表恒为空）。
  */
-var BLOCK_REMOTE_FETCH = true;
+var USE_MODLIST_MIRROR = true;
+
+/** GitHub 文件镜像前缀（实测国内可达；gh-proxy.com 会截断内容，别换过去） */
+var GH_MIRROR_PREFIX = "https://ghproxy.net/";
+
+/** 官方模组注册表原始地址（镜像 = GH_MIRROR_PREFIX + 它） */
+var MODS_JSON_URL = "https://raw.githubusercontent.com/Anuken/MindustryMods/master/mods.json";
 
 // ---------- HUD 按钮 ----------
 
@@ -1482,10 +1486,10 @@ function makeHudButton(){
     print(MOD_NAME + "：已注入「自定义面板」按钮（可按住拖动）。");
 }
 
-// ---------- 挡掉必然失败的远程请求 ----------
+// ---------- 远程请求改道 ----------
 
 /**
- * 关掉游戏自己发起的两类远程请求，它们失败后都会弹「发生错误 (Connection reset)」。
+ * 关掉/改道游戏自己发起的两类远程请求。
  *
  * 模组浏览器那条路径的字节码（160.7）：
  *   ModBrowserDialog.getModList(cons):
@@ -1497,14 +1501,35 @@ function makeHudButton(){
  *   getModListInternal(i):
  *     1: getstatic Vars.modJsonURLs; arraylength; if_icmplt 9; return
  *     ...Http.get(url, ok, fail)，失败换下一个地址，全失败 -> ModsDialog.showModError
- * 所以只要 modList 不是 null，请求根本发不出去，弹窗也就不会出现。
+ * 所以只要 modList 不是 null，原始（必失败）请求就发不出去。
+ * modList 是 protected，Rhino 只认公有字段，只能反射 —— 唯一可行写法。
  *
- * modList 是 protected（javac 从别的包访问它直接被拒绝，已实证），Rhino 的属性查找
- * 同样只认公有字段，所以这里只能走反射 —— 这不是备胎写法，是唯一可行的写法。
+ * modList 的宿主对象随版本不同（160.8 反编译实测：ModBrowserDialog 类被删、
+ * 浏览器逻辑并进了 ModsDialog）：
+ *   ≤160.7：ModsDialog.browser（公有 ModBrowserDialog），modList 声明在 ModBrowserDialog；
+ *   160.8+：modList 是 ModsDialog 自己的私有字段，browser 字段类型变 BaseDialog 且非宿主。
+ * 所以先试旧路径、摸不到再试新路径；两条都失败只打一行简短提示，不打异常细节
+ * （旧版上真机日志曾刷「Cannot read property "browser" from null」和
+ *  「ClassNotFoundException: mindustry.ui.dialogs.ModBrowserDialog」）。
+ *
+ * 本版在此基础上「疏」而不是「堵」：塞进去的那个空 Seq 由 fetchModListMirror()
+ * 从 ghproxy.net 镜像填上官方注册表数据，模组浏览器恢复可用。
+ * Vars.modJsonURLs 是 static final（Field.set 会被拒），所以改道只能走 modList 这条路。
  */
-function blockRemoteFetch(){
-    if(!BLOCK_REMOTE_FETCH) return;
 
+/** 塞进浏览器的 Seq 引用，镜像数据填进它；没塞成功为 null */
+var modListSeq = null;
+/** 镜像列表只拉一次 */
+var modListFetchStarted = false;
+
+/** 反射取指定类上声明的 modList 字段（取不到直接抛，由调用方兜住） */
+function findModListField(className){
+    var f = Packages.java.lang.Class.forName(className).getDeclaredField("modList");
+    f.setAccessible(true);
+    return f;
+}
+
+function blockRemoteFetch(){
     // 1) 社区服务器列表：JoinDialog.fetchServers() 第一步就读这个开关
     try{
         // 缺省按 true 处理：Mindustry 读这个键时用的默认值就是 true
@@ -1515,26 +1540,191 @@ function blockRemoteFetch(){
         print(MOD_NAME + "：关闭社区服务器列表失败：" + e);
     }
 
-    // 2) 模组浏览器的远程模组列表：没有任何设置能关，只能喂一个空列表给它
+    // 2) 模组浏览器的远程模组列表：塞空列表挡住原始请求，再由镜像填数据
+    if(Vars.ui == null || Vars.ui.mods == null){
+        print(MOD_NAME + "：模组浏览器还没建好，这次不挡远程列表。");
+        return;
+    }
+    var listOwner = null;
+    var modListField = null;
     try{
+        // 旧路径（≤160.7）：browser 是公有 ModBrowserDialog 且已建好
         var browser = Vars.ui.mods.browser;
-        if(browser == null){
-            print(MOD_NAME + "：模组浏览器还没建好，这次不挡远程列表。");
+        if(browser != null){
+            modListField = findModListField("mindustry.ui.dialogs.ModBrowserDialog");
+            listOwner = browser;
+        }
+    }catch(eOld){
+        modListField = null;
+    }
+    if(modListField == null){
+        try{
+            // 新路径（160.8+）：modList 就在 ModsDialog 自己身上
+            modListField = findModListField("mindustry.ui.dialogs.ModsDialog");
+            listOwner = Vars.ui.mods;
+        }catch(eNew){
+            print(MOD_NAME + "：模组浏览器结构没认出来，远程列表保持原样（不影响取物）。");
             return;
         }
-        var modListField = Packages.java.lang.Class
-            .forName("mindustry.ui.dialogs.ModBrowserDialog")
-            .getDeclaredField("modList");
-        modListField.setAccessible(true);
-        if(modListField.get(browser) == null){
-            modListField.set(browser, new Seq());
-            print(MOD_NAME + "：已挡掉远程模组列表（不再弹 Connection reset；"
-                + "模组浏览器只显示本地已装的模组）。");
+    }
+    try{
+        var existing = modListField.get(listOwner);
+        if(existing == null){
+            modListSeq = new Seq();
+            modListField.set(listOwner, modListSeq);
+            print(MOD_NAME + "：已挡住必失败的原始远程列表请求。");
+        }else{
+            modListSeq = existing;
         }
     }catch(e){
-        print(MOD_NAME + "：挡远程模组列表失败（只会多出报错弹窗，不影响取物）：" + e);
+        print(MOD_NAME + "：挡远程模组列表失败（只会多出报错弹窗，不影响取物）。");
+    }
+
+    if(USE_MODLIST_MIRROR && modListSeq != null && modListSeq.size == 0){
+        fetchModListMirror();
     }
 }
+
+/**
+ * arc.func.ConsT：Http.get 的成功回调是它（get(T) throws Exception），
+ * global.js 只提供了 Cons/Floatc 等包装，这里补一个。
+ */
+function consT(fn){
+    return new Packages.arc.func.ConsT(){
+        get: fn
+    };
+}
+
+/** 从 ghproxy.net 镜像拉官方模组注册表，填进 modListSeq（主线程回调） */
+function fetchModListMirror(){
+    if(modListFetchStarted) return;
+    modListFetchStarted = true;
+    try{
+        Packages.arc.util.Http.get(
+            GH_MIRROR_PREFIX + MODS_JSON_URL,
+            consT(safe("模组镜像列表回调", function(res){
+                var count = parseModListInto(String(res.getResultAsString()));
+                print(MOD_NAME + "：远程模组列表已从镜像加载 " + count + " 条。");
+            })),
+            cons(safe("模组镜像列表失败", function(err){
+                print(MOD_NAME + "：镜像模组列表拉取失败（浏览器将只显示本地模组）：" + err);
+            }))
+        );
+    }catch(e){
+        print(MOD_NAME + "：发起镜像模组列表请求失败：" + e);
+    }
+}
+
+/** 把 mods.json 文本解析成 ModListing 填进 modListSeq，返回条数 */
+function parseModListInto(text){
+    if(modListSeq == null) return 0;
+    var jval = Packages.arc.util.serialization.Jval.read(text);
+    if(jval == null || !jval.isArray()) return 0;
+    var arr = jval.asArray();
+    var count = 0;
+    var entries = [];
+    for(var i = 0; i < arr.size; i++){
+        entries.push(arr.get(i));
+    }
+    for(var k = 0; k < entries.length; k++){
+        var e = entries[k];
+        var repo = e.getString("repo", null);
+        if(repo == null) continue;
+        var listing = new Packages.mindustry.mod.ModListing();
+        listing.repo = repo;
+        listing.internalName = e.getString("internalName", repo);
+        listing.name = e.getString("name", repo);
+        listing.author = e.getString("author", "");
+        listing.description = e.getString("description", "");
+        listing.lastUpdated = e.getString("lastUpdated", "");
+        listing.version = e.getString("version", "");
+        listing.minGameVersion = e.getString("minGameVersion", "");
+        listing.iconHash = e.getString("iconHash", null);
+        listing.hasIcon = e.getBool("hasIcon", false);
+        listing.hasScripts = e.getBool("hasScripts", false);
+        listing.hasJava = e.getBool("hasJava", false);
+        listing.iosCompatible = e.getBool("iosCompatible", false);
+        listing.legacyCompatible = e.getBool("legacyCompatible", false);
+        listing.stars = e.getInt("stars", 0);
+        modListSeq.add(listing);
+        count++;
+    }
+    return count;
+}
+
+// ---------- 修复游戏自带「导入文件」的回传被静默丢弃（仅 Android） ----------
+/*
+ * 真机根因（logcat 铁证）：ColorOS 等文件管理器用 SAF 选完文件回传时，
+ * 结果 Intent 的 data 为 null、只有 clipData。游戏 AndroidLauncher 的回调守卫
+ * 写的是 `in.getData() != null`，整次回传被静默丢弃 → 「模组 → 导入模组 →
+ * 导入文件」永远没反应、列表显示「未找到模组」。
+ * 游戏自己的后续逻辑其实支持 clipData（只是被守卫挡在门外），所以模组侧
+ * 不需要改游戏代码：把 Core.app.eventListeners 里每个回调监听包一层，
+ * 回调前发现 data==null 且 clipData 有条目，就把第一条 URI setData 回 Intent，
+ * 守卫放行，导入照常走游戏原链路（多文件选择也仍然全量生效，
+ * 因为后续分支优先读 clipData）。
+ * eventListeners 是 private final，只能反射取对象、用 put() 原位替换条目；
+ * 监听是玩家点「导入文件」时才注册的，所以用 0.2 秒的周期扫描补包新条目。
+ * onActivityResult 与 Events.run 同在 UI 线程，替换无竞态。
+ */
+
+/** 已处理过的请求码集合（键为 int；请求码单调递增，永不复用） */
+var fixedListenerCodes = {};
+/** 缓存的反射对象；初始化失败一次就置 broken，不再重试刷屏 */
+var listenerFixField = null;
+var listenerFixIface = null;
+var listenerFixBroken = false;
+
+function fixFileChooserResults(){
+    if(listenerFixBroken) return;
+    try{
+        if(listenerFixField == null){
+            var appClass = Packages.java.lang.Class.forName("arc.backend.android.AndroidApplication");
+            listenerFixField = appClass.getDeclaredField("eventListeners");
+            listenerFixField.setAccessible(true);
+            listenerFixIface = Packages.java.lang.Class.forName(
+                "arc.backend.android.AndroidApplication$AndroidEventListener");
+        }
+        var map = listenerFixField.get(Core.app);
+        if(map == null) return;
+        var it = map.entries();
+        while(it.hasNext()){
+            var e = it.next();
+            var code = e.key;
+            if(fixedListenerCodes[code]) continue;
+            fixedListenerCodes[code] = true;
+            wrapResultListener(map, code, e.value);
+        }
+    }catch(err){
+        listenerFixBroken = true;
+        print(MOD_NAME + "：文件选择回传修复未生效（自带导入在此机型仍可能无响应）：" + err);
+    }
+}
+
+/** 把 map 里 code 位置的监听换成「先修 Intent 再转调原监听」的包装版 */
+function wrapResultListener(map, code, original){
+    if(original == null) return;
+    var wrapper = extend(listenerFixIface, {
+        onActivityResult: function(resultCode, data){
+            try{
+                if(data != null && data.getData() == null){
+                    var clip = data.getClipData();
+                    if(clip != null && clip.getItemCount() > 0){
+                        var uri = clip.getItemAt(0).getUri();
+                        if(uri != null) data.setData(uri);
+                    }
+                }
+            }catch(e){
+                print(MOD_NAME + "：修复文件选择回传失败：" + e);
+            }
+            original.onActivityResult(resultCode, data);
+        }
+    });
+    map.put(code, wrapper);
+}
+
+// 周期扫描：监听在玩家点「导入文件」时才注册，结果回传前必然至少扫到一次
+Events.run(0.2, run(safe("文件选择回传修复", fixFileChooserResults)));
 
 // ---------- 入口 ----------
 
