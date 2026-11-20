@@ -51,11 +51,14 @@ A pure client-side UI tool — it adds no game content and causes no multiplayer
 3. Start the game, go to **Settings → Mods**, find "Custom Panel (自定义面板)" and switch it on.
 4. **Restart the game** when prompted.
 
-### Mobile (jar)
-1. Download `custom-item-giver-1.0.jar` from **Releases**.
-2. Using a file manager, copy the jar to `Mindustry/mods/` on internal storage:
-   - create the folder if it does not exist;
-   - on some devices the data directory lives under `Android/...` — use wherever your existing Mindustry folder is.
+### Mobile (zip)
+1. Download `custom-item-giver-1.0.zip` from **Releases**. This is a JavaScript mod — **do not download or use a `.jar`**
+   (Android 14+ cannot load plain jars; the fake jar package previously in Releases has been removed).
+2. Either way works:
+   - **In-game import (recommended)**: use **Mods → Import mod → Import file** and select the zip **unextracted**
+     (the mod's built-in hook fixes the silent import failure on problematic devices);
+   - **Copy to folder**: using a file manager, copy the zip **unextracted** to
+     `Android/data/io.anuke.mindustry/files/mods/` (create the folder if missing) and restart the game.
 3. Start the game, enable "Custom Panel (自定义面板)" in **Settings → Mods**, restart when prompted.
 
 ---
