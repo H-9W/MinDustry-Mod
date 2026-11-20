@@ -155,6 +155,7 @@ var PANEL_VERTICAL_CHROME = 252;
 /** 标签页 */
 var TAB_ITEMS = 0;
 var TAB_BOOST = 1;
+var TAB_MODS = 2;
 
 // ---------- 运行时状态 ----------
 
@@ -167,8 +168,10 @@ var paneCell = null;     // 列表滚动区的 Cell（尺寸随屏幕变）
 var statusCell = null;   // 状态行的 Cell
 var tabBtnItems = null;  // 「取物」标签按钮
 var tabBtnBoost = null;  // 「加速」标签按钮
+var tabBtnMods = null;   // 「模组」标签按钮
 var tabCellItems = null; // 两个标签按钮各自的 Cell（窄屏时宽度按屏宽分摊）
 var tabCellBoost = null;
+var tabCellMods = null;
 var btnEl = null;        // HUD 上的按钮元素
 var dragListener = null; // 挂在按钮上的自建输入监听（点击 + 拖动二合一）
 var btnPlaced = false;   // 按钮是否已经定位过（等 hudGroup 有真实尺寸才置真）
@@ -190,6 +193,10 @@ var searchText = "";
 // 当前活着的那几个输入框控件（可能为 null，也可能随标签切换被换掉）：
 // 只有预设按钮需要往回写文字，读值一律读上面两个字符串。
 var amountField = null;
+
+// 模组页状态
+var modListTable = null;   // 「模组」页里的本地文件列表容器
+var modScanResult = "";    // 模组页最近一次扫描的结果摘要（给状态行用
 
 // 加速状态（只在本次游戏内有效，重开游戏一律回到「关闭」，免得不知不觉一直在加速）
 var boostOn = false;
@@ -1127,9 +1134,241 @@ function buildBoostBody(parent, sizes){
     boostPaneCell.size(sizes.bodyWidth, sizes.listHeight).row();
 }
 
+// ---------- 模组页：直接扫描本地目录导入，绕开系统文件选择器 ----------
+/*
+ * 为什么需要这一页：
+ *   游戏自带「模组 → 导入模组 → 导入文件」走系统 SAF 选择器，
+ *   部分机型（ColorOS/MIUI 等）回传的 Intent.data 为空，
+ *   即使本模组已在 eventListeners 层补了 clipData/dataString 修复，
+ *   仍有机型/版本不兼容 → 整次导入静默失败。
+ *   本页直接扫描已知目录（Download 等）里的 .zip/.jar，
+ *   逐个用 Vars.mods.importMod 装进游戏，完全不经过系统文件选择器，
+ *   是「自带导入失败」时的兜底主路径。
+ */
+
+/** 要扫描的目录名列表（相对外部存储根 / 用户主目录）。
+ *  手机上下载的文件大多落在 Download，PC 上也在 下载/Downloads。 */
+var MOD_SCAN_DIRS = ["Download", "Downloads", "download", "downloads",
+    "Documents", "documents", "下载"];
+
+/**
+ * 「模组」页：扫描按钮 + 说明 + 可滚动的文件列表。
+ * 每行一个文件名 + 「导入」按钮，点导入直接走 Vars.mods.importMod。
+ */
+function buildModBody(parent, sizes){
+    var inner = new Table();
+    inner.left().top();
+    var rowWidth = sizes.bodyWidth - VSCROLL_W;
+
+    // 操作行：扫描按钮
+    var actionRow = addRow(inner, rowWidth);
+    actionRow.button("扫描本地模组", run(safe("扫描本地模组", function(){
+        scanLocalMods();
+    }))).size(ALL_W, ROW_H).wrapLabel(false).ellipsis(true).padRight(GAP_S);
+    actionRow.add("在 Download / Documents 等目录查找 .zip / .jar")
+        .width(rowWidth - ALL_W - GAP_S).ellipsis(true);
+
+    // 说明：本模组怎么装 + 其他模组怎么导
+    var infoRow = addRow(inner, rowWidth);
+    infoRow.add("用法：把模组 .zip 放进手机「下载」目录 → 点上方按钮 → 点「导入」。")
+        .width(rowWidth).ellipsis(true);
+
+    // 显示 mods 目录绝对路径，方便用户手动放文件
+    var modPath = getModDirectoryPath();
+    var pathRow = addRow(inner, rowWidth);
+    pathRow.add("手动安装目录（放进去重启游戏即加载）：").width(rowWidth).ellipsis(true).row();
+    pathRow.add(modPath).width(rowWidth).ellipsis(true).color(new Color(1, 1, 0.6, 1));
+
+    // jar 警告
+    var warnRow = addRow(inner, rowWidth);
+    warnRow.add("Android 14+ 禁止加载可写目录里的 .jar（Java 模组），请用 .zip 的 JS 模组。")
+        .width(rowWidth).ellipsis(true);
+
+    // 列表区
+    modListTable = new Table();
+    modListTable.left().top();
+    var modPaneCell = parent.pane(modListTable);
+    modPaneCell.get().setScrollingDisabledX(true);
+    modPaneCell.size(sizes.bodyWidth, sizes.listHeight).row();
+
+    // 进入页面时自动扫一次
+    scanLocalMods();
+}
+
+/** 获取游戏 mods 目录的绝对路径，取不到就给提示 */
+function getModDirectoryPath(){
+    try{
+        var fi = Vars.modDirectory;
+        if(fi != null){
+            var p = fi.absolutePath();
+            if(p != null && String(p).length > 0) return String(p);
+        }
+    }catch(e){}
+    return "Android/data/<游戏包名>/files/mods/  或  %APPDATA%/Mindustry/mods/";
+}
+
+/** 扫描已知目录里的 .zip/.jar，把结果填进 modListTable */
+function scanLocalMods(){
+    if(modListTable == null) return;
+    modListTable.clearChildren();
+    modScanResult = "扫描中…";
+
+    var found = [];
+    var scannedDirs = [];
+    try{
+        for(var i = 0; i < MOD_SCAN_DIRS.length; i++){
+            var dir = null;
+            try{
+                dir = Core.files.external(MOD_SCAN_DIRS[i]);
+            }catch(e){
+                continue;
+            }
+            if(dir == null || !dir.exists()) continue;
+            scannedDirs.push(MOD_SCAN_DIRS[i]);
+            var files = dir.list();
+            if(files == null) continue;
+            var fileCount = files.length;
+            for(var j = 0; j < fileCount; j++){
+                var f = files[j];
+                if(f == null || f.isDirectory()) continue;
+                var ext = String(f.extension()).toLowerCase();
+                if(ext != "zip" && ext != "jar") continue;
+                found.push(f);
+            }
+        }
+    }catch(e){
+        modScanResult = "扫描失败：" + e;
+        modListTable.add("扫描出错：" + e).width(sizes_bodyWidthSafe()).ellipsis(true).row();
+        return;
+    }
+
+    if(found.length == 0){
+        modScanResult = "未找到模组文件";
+        var dirs = scannedDirs.length > 0 ? scannedDirs.join("、") : "Download";
+        modListTable.add("在 " + dirs + " 里没有找到 .zip 或 .jar 文件。把模组放进去后点「扫描本地模组」。")
+            .width(sizes_bodyWidthSafe()).ellipsis(true).row();
+        return;
+    }
+
+    // 按修改时间倒序（新下载的在前面）
+    found.sort(function(a, b){
+        try{ return b.lastModified() - a.lastModified(); }catch(e){ return 0; }
+    });
+
+    modScanResult = "找到 " + found.length + " 个文件";
+    for(var k = 0; k < found.length; k++){
+        addModFileRow(modListTable, found[k], sizes_bodyWidthSafe());
+    }
+}
+
+/** 列表宽度兜底：modListTable 的父 Cell 还没拿到尺寸时用 PANE_MIN_W */
+function sizes_bodyWidthSafe(){
+    try{
+        var s = currentLayout();
+        return s.bodyWidth - VSCROLL_W;
+    }catch(e){
+        return PANE_MIN_W;
+    }
+}
+
+/** 一行：文件名 | 大小 | 导入按钮 */
+function addModFileRow(parent, file, rowWidth){
+    var name = String(file.name());
+    var sizeText = formatFileSize(file.length());
+    var importW = GIVE_W;
+    var sizeW = 60;
+
+    var row = new Table();
+    row.left().top();
+
+    // 文件名（吃掉剩余宽度，过长省略号）
+    row.add(name).width(rowWidth - sizeW - GAP_S - importW - GAP_S * 2)
+        .ellipsis(true).padRight(GAP_S);
+    // 大小
+    row.add(sizeText).width(sizeW).ellipsis(true).padRight(GAP_S);
+    // 导入按钮
+    row.button("导入", run(safe("导入模组 " + name, function(){
+        importModFile(file);
+    }))).size(importW, ROW_H).wrapLabel(false).ellipsis(true);
+
+    parent.add(row).width(rowWidth).padBottom(GAP_S).row();
+}
+
+/** 字节数 → 可读字符串（B / KB / MB） */
+function formatFileSize(bytes){
+    try{
+        var b = Number(bytes);
+        if(isNaN(b) || b <= 0) return "?";
+        if(b < 1024) return b + " B";
+        if(b < 1024 * 1024) return Math.round(b / 1024) + " KB";
+        return (b / (1024 * 1024)).toFixed(1) + " MB";
+    }catch(e){
+        return "?";
+    }
+}
+
+/**
+ * 直接调用 Vars.mods.importMod 把文件装进游戏。
+ * 走的是游戏内部同一个导入入口，不经过系统文件选择器。
+ * 导入成功后提示重启游戏生效；jar 在 Android 14+ 会失败并提示改用 zip。
+ */
+function importModFile(file){
+    if(file == null){
+        notice("文件不存在。");
+        return;
+    }
+    var name = String(file.name());
+    var ext = String(file.extension()).toLowerCase();
+    try{
+        // Android 14+ 上 jar 模组必然加载失败（系统禁止从可写目录加载 dex），
+        // 提前拦截给一个明确提示，而不是让游戏静默删文件。
+        if(ext == "jar" && isAndroid14Plus()){
+            notice(name + " 是 .jar（Java 模组），Android 14+ 无法加载。请改用 .zip 打包的 JS 模组。");
+            return;
+        }
+
+        var loaded = Vars.mods.importMod(file, true);
+        if(loaded != null){
+            var display = loaded.meta != null && loaded.meta.displayName != null
+                ? String(loaded.meta.displayName) : name;
+            notice("已导入「" + display + "」，重启游戏后生效。");
+            print(MOD_NAME + "：导入成功 " + name + " -> " + display);
+            // 导入完重扫一次，文件可能已被游戏移走
+            scanLocalMods();
+        }else{
+            notice("导入失败：" + name + "（游戏返回空）。");
+            print(MOD_NAME + "：导入返回空 " + name);
+        }
+    }catch(e){
+        var msg = String(e);
+        // Android 14+ 加载 jar 失败的典型错误
+        if(ext == "jar" && (msg.indexOf("dex") >= 0 || msg.indexOf("DexClassLoader") >= 0
+            || msg.indexOf("loadJar") >= 0 || msg.indexOf("moddex") >= 0)){
+            notice(name + " 是 .jar（Java 模组），此 Android 版本无法加载。请改用 .zip 的 JS 模组。");
+        }else{
+            notice("导入失败：" + name + " — " + msg);
+        }
+        print(MOD_NAME + "：导入异常 " + name + "：" + e);
+    }
+}
+
+/** 判断当前是否 Android 14+（API 34+），取不到按 false 处理 */
+function isAndroid14Plus(){
+    try{
+        var build = Packages.android.os.Build;
+        if(build != null && build.VERSION != null && build.VERSION.SDK_INT >= 34){
+            return true;
+        }
+    }catch(e){
+        // 非 Android 环境（PC），没有这个限制
+    }
+    return false;
+}
+
 // ---------- 状态行 ----------
 
 function statusText(){
+    if(activeTab == TAB_MODS) return "模组页 · " + (modScanResult || "点「扫描本地模组」查找 .zip/.jar");
     if(activeTab == TAB_BOOST) return "加速页 · " + boostSummary();
     if(isClient()) return "取物页 · 共 " + matchedCount + " 种 · 多人客户端不发放";
     return "取物页 · 共 " + matchedCount + " 种 · 每次发放 " + readAmount();
@@ -1137,7 +1376,7 @@ function statusText(){
 
 // ---------- 悬浮窗 ----------
 
-/** 标签页那一行：两个页名按钮，当前页按下高亮 */
+/** 标签页那一行：三个页名按钮，当前页按下高亮 */
 function buildTabBar(){
     var tabRow = new Table();
     tabRow.left().top();
@@ -1149,8 +1388,13 @@ function buildTabBar(){
 
     tabCellBoost = tabRow.button("加速", run(safe("切到加速页", function(){
         switchTab(TAB_BOOST);
-    }))).size(TAB_W, ROW_H).wrapLabel(false).ellipsis(true);
+    }))).size(TAB_W, ROW_H).wrapLabel(false).ellipsis(true).padRight(GAP_S);
     tabBtnBoost = tabCellBoost.get();
+
+    tabCellMods = tabRow.button("模组", run(safe("切到模组页", function(){
+        switchTab(TAB_MODS);
+    }))).size(TAB_W, ROW_H).wrapLabel(false).ellipsis(true);
+    tabBtnMods = tabCellMods.get();
 
     return tabRow;
 }
@@ -1162,11 +1406,12 @@ function switchTab(index){
 }
 
 /** 高亮当前页。就算默认按钮样式没有 checked 图（按下才看得见），
- *  状态行开头也写着「取物页 / 加速页」，用户总看得出自己在哪一页。 */
+ *  状态行开头也写着「取物页 / 加速页 / 模组页」，用户总看得出自己在哪一页。 */
 function refreshTabs(){
     try{
         if(tabBtnItems != null) tabBtnItems.setChecked(activeTab == TAB_ITEMS);
         if(tabBtnBoost != null) tabBtnBoost.setChecked(activeTab == TAB_BOOST);
+        if(tabBtnMods != null) tabBtnMods.setChecked(activeTab == TAB_MODS);
     }catch(e){
         print(MOD_NAME + "：标签高亮失败（不影响使用）：" + e);
     }
@@ -1188,25 +1433,29 @@ function refillBody(){
     if(statusCell != null) statusCell.width(sizes.bodyWidth);
     if(bodyCell != null) bodyCell.width(sizes.bodyWidth);
 
-    // 移动端窄屏：两个页签按 TAB_W 排不下时按屏宽分摊，保证不顶出面板
-    if(tabCellItems != null && tabCellBoost != null){
+    // 移动端窄屏：三个页签按 TAB_W 排不下时按屏宽分摊，保证不顶出面板
+    if(tabCellItems != null && tabCellBoost != null && tabCellMods != null){
         var tabW = TAB_W;
-        var fit = Math.floor((sizes.bodyWidth - GAP_S) / 2);
+        var fit = Math.floor((sizes.bodyWidth - GAP_S * 2) / 3);
         if(fit > 0 && fit < tabW) tabW = Math.max(40, fit);
         tabCellItems.width(tabW);
         tabCellBoost.width(tabW);
+        tabCellMods.width(tabW);
     }
 
     bodyTable.clearChildren();
     bodyTable.left().top();
-    // 下面这些只属于「取物」页，切走就清空，
+    // 下面这些只属于各自页面，切走就清空，
     // 免得搜索回调摸到已经被拆掉的格子（Cell 是池化复用的，改它等于改别人）
     listTable = null;
     paneCell = null;
     amountField = null;
+    modListTable = null;
 
     if(activeTab == TAB_BOOST){
         buildBoostBody(bodyTable, sizes);
+    }else if(activeTab == TAB_MODS){
+        buildModBody(bodyTable, sizes);
     }else{
         buildItemsBody(bodyTable, sizes);
     }
@@ -1658,11 +1907,13 @@ function parseModListInto(text){
  * 结果 Intent 的 data 为 null、只有 clipData。游戏 AndroidLauncher 的回调守卫
  * 写的是 `in.getData() != null`，整次回传被静默丢弃 → 「模组 → 导入模组 →
  * 导入文件」永远没反应、列表显示「未找到模组」。
- * 游戏自己的后续逻辑其实支持 clipData（只是被守卫挡在门外），所以模组侧
- * 不需要改游戏代码：把 Core.app.eventListeners 里每个回调监听包一层，
- * 回调前发现 data==null 且 clipData 有条目，就把第一条 URI setData 回 Intent，
- * 守卫放行，导入照常走游戏原链路（多文件选择也仍然全量生效，
- * 因为后续分支优先读 clipData）。
+ *
+ * 本版在 v1 基础上补全三种静默失败源：
+ *   1) data == null：Intent 整个为空，只能记日志（游戏守卫 in != null 也会挡）。
+ *   2) data.getData() == null 但 clipData 有项：把第一条 URI setData 回去（v1 已有）。
+ *   3) data.getData() == null 且 clipData 也为空：尝试 getDataString() 解析出 URI。
+ * 另外加日志，方便真机定位到底卡在哪一步。
+ *
  * eventListeners 是 private final，只能反射取对象、用 put() 原位替换条目；
  * 监听是玩家点「导入文件」时才注册的，所以用 0.2 秒的周期扫描补包新条目。
  * onActivityResult 与 Events.run 同在 UI 线程，替换无竞态。
@@ -1674,6 +1925,8 @@ var fixedListenerCodes = {};
 var listenerFixField = null;
 var listenerFixIface = null;
 var listenerFixBroken = false;
+/** 反射初始化成功后打一次日志，避免每 0.2 秒刷屏 */
+var listenerFixInitLogged = false;
 
 function fixFileChooserResults(){
     if(listenerFixBroken) return;
@@ -1685,15 +1938,24 @@ function fixFileChooserResults(){
             listenerFixIface = Packages.java.lang.Class.forName(
                 "arc.backend.android.AndroidApplication$AndroidEventListener");
         }
+        if(!listenerFixInitLogged){
+            listenerFixInitLogged = true;
+            print(MOD_NAME + "：文件选择回传修复已就绪（扫描 eventListeners）。");
+        }
         var map = listenerFixField.get(Core.app);
         if(map == null) return;
         var it = map.entries();
+        var wrapped = 0;
         while(it.hasNext()){
             var e = it.next();
             var code = e.key;
             if(fixedListenerCodes[code]) continue;
             fixedListenerCodes[code] = true;
             wrapResultListener(map, code, e.value);
+            wrapped++;
+        }
+        if(wrapped > 0){
+            print(MOD_NAME + "：已包裹 " + wrapped + " 个 activity 回传监听。");
         }
     }catch(err){
         listenerFixBroken = true;
@@ -1707,11 +1969,34 @@ function wrapResultListener(map, code, original){
     var wrapper = extend(listenerFixIface, {
         onActivityResult: function(resultCode, data){
             try{
-                if(data != null && data.getData() == null){
+                if(data == null){
+                    // Intent 整个为空：游戏守卫 in != null 会挡，记一笔供排查
+                    print(MOD_NAME + "：文件选择回传 Intent 为 null（resultCode=" + resultCode + "）。");
+                }else if(data.getData() == null){
+                    // 优先走 clipData（多文件/搜索页选择常见）
                     var clip = data.getClipData();
                     if(clip != null && clip.getItemCount() > 0){
                         var uri = clip.getItemAt(0).getUri();
-                        if(uri != null) data.setData(uri);
+                        if(uri != null){
+                            data.setData(uri);
+                            print(MOD_NAME + "：已从 clipData 修复文件选择回传（uri=" + uri + "）。");
+                        }
+                    }else{
+                        // 回退：getDataString() 里可能藏着 content:// URI
+                        var ds = data.getDataString();
+                        if(ds != null && String(ds).length > 0){
+                            try{
+                                var parsed = Packages.android.net.Uri.parse(ds);
+                                if(parsed != null){
+                                    data.setData(parsed);
+                                    print(MOD_NAME + "：已从 dataString 修复文件选择回传（uri=" + ds + "）。");
+                                }
+                            }catch(parseErr){
+                                print(MOD_NAME + "：dataString 解析失败：" + parseErr);
+                            }
+                        }else{
+                            print(MOD_NAME + "：文件选择回传无 data 无 clipData（resultCode=" + resultCode + "）。");
+                        }
                     }
                 }
             }catch(e){
