@@ -105,6 +105,6 @@ Rules:
 This repository is a **release mirror**, separate from the local development workspace:
 
 - It contains only each mod's **source code and player documentation**.
-- Developer-side validation scripts, build tools, screenshots and local packaging outputs (such as `开发校验/`, `发布/`,
+- Developer-side validation scripts, build tools, screenshots and local packaging outputs (such as
   `.screenshots/`, `__pycache__/`, `*.class`) are **never committed** (already ignored via `.gitignore`).
 - Installable packages are not stored in the repository files; they are distributed exclusively through **GitHub Releases**.
