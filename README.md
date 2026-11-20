@@ -12,7 +12,7 @@
 
 </div>
 
-> 本仓库只收录各模组的**源码与玩家文档**；正式安装包（`.zip` / `.jar`）统一发布在 [Releases](releases)。
+> 本仓库只收录各模组的**源码与玩家文档**；正式安装包（`.zip`）统一发布在 [Releases](releases)。
 > 想直接玩？只需要去 Releases 下载安装包，**不需要**看懂仓库里任何源码文件。
 
 ---
@@ -38,13 +38,13 @@
 
 ## 通用安装指引
 
-每个模组的 Releases 安装包提供两种格式，按平台选用：
+每个模组的 Releases 安装包统一为 `.zip` 格式（本模组是 JS 模组，**不要下载或使用 `.jar`**——安卓 14+ 加载不了普通 jar，此前 Releases 里的假 jar 已删除）：
 
 - **PC 端（zip）**：从 [Releases](releases) 下载对应模组的 `*.zip`，**不解压**直接复制到
   `%APPDATA%\Mindustry\mods\`，游戏内 **设置 → Mods** 启用后重启游戏。
-- **移动端（jar）**：从 [Releases](releases) 下载对应模组的 `*.jar`，复制到手机内部存储的
-  `Mindustry/mods/` 目录（不存在则手动新建；部分设备位于 `Android/...` 下的 Mindustry 数据目录），
-  游戏内 Mods 列表启用。
+- **移动端（zip）**：从 [Releases](releases) 下载对应模组的 `*.zip`，**不解压**，两种方式任选其一：
+  游戏内 **模组 → 导入模组 → 导入文件** 选中该 zip 即可（模组内置钩子已修复该流程在问题机型上的静默失败 bug）；
+  或用文件管理器把 zip 复制到 `Android/data/io.anuke.mindustry/files/mods/`（不存在则手动新建）后重启游戏。
 
 各模组的具体功能、使用步骤与故障排查，请看对应模组目录下的 README（每个模组都提供中 / 英两份手册）。
 
@@ -85,7 +85,7 @@ MinDustry-Mod/
 要求：
 - 每个模组**独立**放在 `mods/<模组ID>/` 下，互不混放；
 - 目录内只放游戏加载所需源码（`mod.hjson`、`scripts/` 等）与玩家文档（中英两份 README）；
-- 安装包内的目录结构与仓库一致：zip/jar 根级直接是 `mod.hjson` 与 `scripts/`。
+- 安装包内的目录结构与仓库一致：zip 根级直接是 `mod.hjson` 与 `scripts/`。
 
 ---
 
@@ -95,8 +95,8 @@ MinDustry-Mod/
 2. **放源码**：复制 `mod.hjson` 与 `scripts/`（或 `content/`、`bundles/` 等游戏要求的目录）。
 3. **写手册**：编写该模组的中、英两份玩家文档（`README.md` 与 `README.en.md`：功能、双平台安装、使用步骤、故障排查）。
 4. **更新目录表**：在本文件与 `README.en.md` 的「模组目录」表中各加一行。
-5. **打安装包**：分别打出 PC 用 `.zip` 与移动端用 `.jar`。
-6. **发 Release**：在 GitHub Releases 中发布两个安装包，命名 `<模组ID>-<版本>.zip` / `.jar`。
+5. **打安装包**：打出一个 PC / 移动端通用的 `.zip` 包（不要发布 `.jar`：安卓 14+ 加载不了普通 jar，JS 模组伪装成 jar 也不可靠）。
+6. **发 Release**：在 GitHub Releases 中发布安装包，命名 `<模组ID>-<版本>.zip`。
 
 ---
 
