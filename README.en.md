@@ -12,7 +12,7 @@
 
 </div>
 
-> This repository only contains mod **source code and player documentation**; official installable packages (`.zip` / `.jar`) are published in [Releases](releases).
+> This repository only contains mod **source code and player documentation**; official installable packages (`.zip`) are published in [Releases](releases).
 > Just want to play? Download the package from Releases — you do **not** need to understand any source file in this repository.
 
 ---
@@ -38,13 +38,15 @@
 
 ## General Installation
 
-Each mod publishes two package formats in Releases, pick by platform:
+Each mod publishes a single `.zip` package in Releases. This is a JavaScript mod — **do not download or use a `.jar`**
+(Android 14+ cannot load plain jars; the fake jar package previously in Releases has been removed):
 
 - **PC (zip)**: Download the mod's `*.zip` from [Releases](releases). **Do not extract it** — copy the zip as-is to
   `%APPDATA%\Mindustry\mods\`, then enable it in **Settings → Mods** and restart the game.
-- **Mobile (jar)**: Download the mod's `*.jar` from [Releases](releases) and copy it to the
-  `Mindustry/mods/` folder on your device's internal storage (create the folder if missing; on some devices it lives
-  under `Android/...` in the Mindustry data directory), then enable it in the in-game Mods list.
+- **Mobile (zip)**: Download the mod's `*.zip` from [Releases](releases) and keep it **unextracted**. Either use the
+  in-game **Mods → Import mod → Import file** flow and select the zip (the mod's built-in hook fixes the silent
+  import failure on problematic devices), or copy the zip to `Android/data/io.anuke.mindustry/files/mods/`
+  (create the folder if missing) and restart the game.
 
 For detailed features, usage steps and troubleshooting, read the README inside each mod's folder (Chinese and English manuals are provided).
 
@@ -85,7 +87,7 @@ MinDustry-Mod/
 Rules:
 - Every mod lives **alone** under `mods/<mod-id>/`; never mix mods.
 - Only game-required sources (`mod.hjson`, `scripts/`, etc.) and player docs (both READMEs) go inside.
-- The package layout matches the repository: `mod.hjson` and `scripts/` sit at the zip/jar root.
+- The package layout matches the repository: `mod.hjson` and `scripts/` sit at the zip root.
 
 ---
 
@@ -95,8 +97,9 @@ Rules:
 2. **Add sources**: copy `mod.hjson` and `scripts/` (or `content/`, `bundles/`, etc. as required by the game).
 3. **Write manuals**: provide both the Chinese `README.md` and English `README.en.md` (features, dual-platform install, usage, troubleshooting).
 4. **Update the index**: add a row to the Mod Index table in both `README.md` and `README.en.md`.
-5. **Build packages**: produce the PC `.zip` and the mobile `.jar`.
-6. **Publish a Release**: upload both packages under `<mod-id>-<version>.zip` / `.jar`.
+5. **Build packages**: produce a single `.zip` that works on both PC and mobile (do not publish a `.jar` —
+   Android 14+ cannot load plain jars, and faking a JS mod as a jar is unreliable).
+6. **Publish a Release**: upload the package named `<mod-id>-<version>.zip`.
 
 ---
 
